@@ -1,0 +1,1452 @@
+---
+title: "Fallstudide über Verkehrsdaten von PKW, LKW und Bussen mit Naiven, ETS und ARIMA Modellen"
+abstract: "In dieser Fallstudie werden die Zeitreihenstrukturen der stündlich erfasste Verkehrsdaten aus dem Jahr 2022 aus Meschede von der Bundesanstalt für Verkehrswesen analysiert. Dafür werden die drei Fahrzeugklassen PKW, LKW und Busse genauer betrachtet. Es werden Naive Methoden, ETS Modelle und ARIMA Modelle verglichen. ARIMA Modelle erfassen die Strukturen der Verkehrsdaten von LKW und Bussen gut, erfassen jedoch die Strukuren der PKW nicht ausreichend, ebenso wie die ETS Modelle"
+keywords: "Statistik, Regression, Forecasting, Verkehrsdaten, ARIMA, ETS"
+
+course: Forecasting (Prof. Dr. Buchwitz)
+supervisor: Prof. Dr. Buchwitz
+city: Meschede
+
+# List of Authors
+author:
+- familyname: B
+  othernames: E
+  address:
+  qualifications: "Data Science (BA, 6. Semester)"
+  email:
+  correspondingauthor: false
+
+# Language Options
+german: true # German Dummy Text
+lang: de-de   # Text Language: en-gb, en-us, de-de
+
+# Indexes
+toc: true     # Table of Contents
+lot: false    # List of Tables
+lof: false    # List of Figures
+
+# Output Options
+bibliography: references.bib
+biblio-style: authoryear-comp
+blind: false
+cover: true
+checklist: false
+output:
+  fhswf::seminarpaper:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 8
+    keep_tex: no
+    number_sections: yes
+    citation_package: biblatex
+knit: fhswf::render_seminarpaper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache=FALSE, messages=FALSE, warning=FALSE, 
+                      attr.source='.numberLines', singlespacing = TRUE)
+fhswf::fhswf_hooks()
+
+# Load Packages
+library(fhswf)
+library(dplyr)
+library(tsibble)
+library(ggplot2)
+library(fabletools)
+library(fable)
+library(tidyr)
+library(forecast)
+library(feasts)
+```
+
+
+# Einführung
+
+## Wofür?
+Vorhersage für Verkehr sinnvoll, für effizentes Verkehrsmanagement:
+- Vermeidung von Staus (Sicherheits- und Umweltaspekt)
+- Bessere Verkehrsplanung (z.B. für Buspläne)
+- Optimierung von Umleitungen/Ampelschaltungen
+- Naviagtion
+
+
+## Was?
+Vorliegende Daten:
+- Daten von Bundesanstalt für Straßenwesen
+- Zeitraum: 1 Jahr (2022)
+- Aggregation: stündlich
+- Aufteilung: liegt in 4 Ebenen vor (Kfz (1), Lkw-ähnlich und Pkw-ähnlich (2), ... (5+1),...(8+1))
+
+
+
+
+
+# Daten
+
+## Laden und Aufbereitung der Daten
+```{r, echo=T}
+df <- read.csv("zst5119_2022.csv", sep = ";")
+df$Datum <- as.character(df$Datum)
+
+df <- df %>%
+  mutate(
+    Datetime = as.POSIXct(
+      paste0(
+        "20", substr(Datum, 1, 2), "-",
+        substr(Datum, 3, 4), "-",
+        substr(Datum, 5, 6), " ",
+        sprintf("%02d", Stunde), ":00"
+      ),
+      format = "%Y-%m-%d %H:%M"#,
+      #tz = "CET"
+    )
+  )
+```
+
+
+### Erste Beobachtungen
+
+Sommerzeit
+```{r, echo=T}
+df_summer <- df %>%
+  filter(Datetime >= as.POSIXct("2022-03-28 00:00:00"), Datetime <= as.POSIXct("2022-10-30 00:00:00"))
+
+traffic_summer_ts <- df_summer %>%
+  select(Datetime, Stunde, Wotag, Fahrtzw, KFZ_R1, KFZ_R2) %>%
+  as_tsibble(index = Datetime)
+
+traffic_summer_ts
+```
+
+```{r, echo=T}
+autoplot(traffic_summer_ts, KFZ_R1) +
+  labs(title = "KFZ_R1 über die Zeit", x = "Zeit", y = "KFZ-Richtung 1") +
+  theme_minimal()
+
+autoplot(traffic_summer_ts, KFZ_R2) +
+  labs(title = "KFZ_R2 über die Zeit", x = "Zeit", y = "KFZ-Richtung 2") +
+  theme_minimal()
+```
+
+
+Ersten 4 Wochen aus Sommerzeit
+```{r, echo=T}
+df_4weeks <- df %>%
+  filter(Datetime >= as.POSIXct("2022-03-28 00:00:00"), Datetime <= as.POSIXct("2022-04-25 00:00:00"))
+
+traffic_4weeks_ts <- df_4weeks %>%
+  select(Datetime, Stunde, Wotag, Fahrtzw, KFZ_R1, KFZ_R2) %>%
+  as_tsibble(index = Datetime)
+
+traffic_4weeks_ts
+
+autoplot(traffic_4weeks_ts, KFZ_R1) +
+  labs(title = "KFZ_R1 über die Zeit", x = "Zeit", y = "KFZ-Richtung 1") +
+  theme_minimal()
+
+autoplot(traffic_4weeks_ts, KFZ_R2) +
+  labs(title = "KFZ_R2 über die Zeit", x = "Zeit", y = "KFZ-Richtung 2") +
+  theme_minimal()
+# Ostern 17.4.22
+```
+
+
+Zweiter und dritter Monate aus Sommerzeit
+```{r, echo=T}
+df_2months <- df %>%
+  filter(Datetime >= as.POSIXct("2022-05-01 00:00:00"), Datetime <= as.POSIXct("2022-07-01 00:00:00"))
+
+traffic_2months_ts <- df_2months %>%
+  select(Datetime, Stunde, Wotag, Fahrtzw, KFZ_R1, KFZ_R2) %>%
+  as_tsibble(index = Datetime)
+
+traffic_2months_ts
+
+autoplot(traffic_2months_ts, KFZ_R1) +
+  labs(title = "KFZ_R1 über die Zeit", x = "Zeit", y = "KFZ-Richtung 1") +
+  theme_minimal()
+
+autoplot(traffic_2months_ts, KFZ_R2) +
+  labs(title = "KFZ_R2 über die Zeit", x = "Zeit", y = "KFZ-Richtung 2") +
+  theme_minimal()
+# Christi Himmelfahrt 26.05.22
+# Pfingsten 05.06.22 (aber So)
+# Beginn Sommerferien NRW 27.06.2022
+```
+
+
+### Erste Erkenntnisse
+- Wochensaison erkennbar: Ausschläge Mo-Do etwa gleich stark, Fr am stärksten, Sa + So deutlich schwächer ausgeprägt (Sa nochmal mehr als So)
+- Mo - Fr Mittagstief erkennbar
+- Auffäligkeiten, wie höheres/niedriges Verkehrsaufkommen, Zusammenhang mit Feiertagen/Ferien (Mo 27.05. -> Christi Himmelfahrt)
+- Probleme durch Zeitverschiebung -> Fokus auf Stunden oder Tage bzw. tages- oder wochensaison?
+
+Stunden oder Tage?
+- Stunden:
+  - Tagessaison erkennbar (Mittagstief)
+  - Nachteil: Zeitverschiebung -> Mittelwerte bilden. Einmal aus Stunde vorher/stunde nachher, einmal aus den beiden Zeilen (gleiche Urhzeit)
+- Tage:
+  - wahrscheinlich Komplexere/interessantere Struktur über die Zeit, als bei Stunden
+  - Wochensaison
+  - besser für Model
+  
+  
+Richtungen einzeln oder zusammen?
+- Einzeln
+  - mehr Details/feinere Muster (Berufsverkehr, Ferien etc.) -> Aufgabenstellung?(sinnvoll bei Beobachtung von Berufsverkehr, Navigation/Stau)
+  - aber mehr Arbeit/Plots -> schwierigerer Überblick
+  - einfacher zu modellieren
+- Zusammen
+  - Gesamtüberblick besser -> Aufgabenstellung?(sinnvoll bei Lärmbelästigung oder Umweltbelastung)
+  - weniger Details -> ungünstig für ETS, ARIMA (stabile Muster werden weggelättet)
+  - mehr Arbeit bei Modellierung/komplexer, aber realistischer
+
+```{r, echo=T}
+traffic_4weeks_long <- traffic_4weeks_ts %>%
+  pivot_longer(cols = c(KFZ_R1, KFZ_R2),
+               values_to = "Anzahl")
+
+# Plot: beide Richtungen in einem Plot
+autoplot(traffic_4weeks_long, Anzahl) +
+  labs(title = "KFZ: Vergleich Richtung 1 vs. Richtung 2 (4 Wochen)",
+       x = "Zeit",
+       y = "Anzahl Fahrzeuge") +
+  theme_minimal()
+```
+- Beobachtungen:
+  - Struktur an Wochentagen sehr ähnlich
+  - Auffäligkeiten an Wochenenden/Feiertagen (für Prognose wahrscheinlich sinnvoll -> daher getrennte Richtungen)
+  
+  
+  
+  
+## Datenaufbereitung für Klassen
+
+- Daten als Aggregation auf Tage in die drei Klassen 1,2, und 5+1
+  - 1: KFZ
+  - 2: PKW-ähnliche und LKW-ähnliche
+  - 3: Aufteilung der Klassen in (5+1): nicht-klassifizierbare Kfz, Pkw-Gruppe, Pkw mit Anhänger, Lkw > 3,5t o. Anhänger, Lkw > 3,5t m. Anhänger / Sattelkraftfahrzeuge, Busse
+
+```{r, echo=T}
+df <- df %>%
+  mutate(Datum_tag = as.Date(Datetime)) %>%
+  filter(!is.na(Datum_tag))
+
+# Aggregation nach Tagen
+
+# KFZ (beide Richtung)
+traffic_kfz_ts <- df %>%
+  group_by(Datum_tag) %>%
+  summarise(
+    KFZ_R1 = sum(KFZ_R1, na.rm = TRUE),
+    KFZ_R2 = sum(KFZ_R2, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = c(KFZ_R1, KFZ_R2),
+               names_to = "Richtung",
+               values_to = "Anzahl") %>%
+  as_tsibble(index = Datum_tag, key = Richtung)
+
+# Pkw/Lkw ähnlich (beide Richtung)
+traffic_pkw_lkw_ts <- df %>%
+  group_by(Datum_tag) %>%
+  summarise(
+    Pkw_R1 = sum(PLZ_R1, na.rm = TRUE),
+    Pkw_R2 = sum(PLZ_R2, na.rm = TRUE),
+    Lkw_R1 = sum(Lkw_R1, na.rm = TRUE),
+    Lkw_R2 = sum(Lkw_R2, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Datum_tag,
+               names_to = "Kategorie",
+               values_to = "Anzahl") %>%
+  as_tsibble(index = Datum_tag, key = Kategorie)
+
+# 5+1 (beide Richtung)
+traffic_pkw_lkw_bus_ts1 <- df %>%
+  group_by(Datum_tag) %>%
+  summarise(
+    Nicht_klassifizierbar_R1 = sum(Son_R1, na.rm = TRUE),
+    Nicht_klassifizierbar_R2 = sum(Son_R2, na.rm = TRUE),
+    Pkw_Gruppe_R1 = sum(Pkw_R1, Lfw_R1, Mot_R1, na.rm = TRUE),
+    Pkw_Gruppe_R2 = sum(Pkw_R2, Lfw_R2, Mot_R2, na.rm = TRUE),
+    Pkw_mit_Anh_R1 = sum(PmA_R1, na.rm = TRUE),
+    Pkw_mit_Anh_R2 = sum(PmA_R2, na.rm = TRUE),
+    Lkw_ohne_Anh_R1 = sum(LoA_R1, na.rm = TRUE),
+    Lkw_ohne_Anh_R2 = sum(LoA_R2, na.rm = TRUE),
+    Lkw_mA_R1 = sum(Lzg_R1, Sat_R1, na.rm = TRUE),
+    Lkw_mA_R2 = sum(Lzg_R2, Sat_R2, na.rm = TRUE),
+    Busse_R1 = sum(Bus_R1, na.rm = TRUE),
+    Busse_R2 = sum(Bus_R2, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = -Datum_tag,
+               names_to = "Kategorie",
+               values_to = "Anzahl") %>%
+  as_tsibble(index = Datum_tag, key = Kategorie)
+```
+
+- Alle einmal plotten, um zu sehen was für forecast lohnt (genug Fahrzeuge)
+```{r, echo=T}
+# KFZ (beide Richtung)
+autoplot(traffic_kfz_ts, Anzahl) +
+  facet_wrap(~Richtung, scales = "free_y") +
+  labs(title = "KFZ Fahrzeuge pro Tag (getrennt nach Richtung)",
+       y = "Anzahl Fahrzeuge", x = "Zeit in Tagen")
+
+# Pkw/Lkw ähnlich (beide Richtung)
+autoplot(traffic_pkw_lkw_ts, Anzahl) +
+  facet_wrap(~Kategorie, scales = "free_y") +
+  labs(title = "Pkw-ähnlich vs. Lkw-ähnlich (getrennt nach Richtung)",
+       y = "Anzahl Fahrzeuge", x = "Zeit in Tagen")
+
+# 5+1 (beide Richtung)
+autoplot(traffic_pkw_lkw_bus_ts1, Anzahl) +
+  facet_wrap(~Kategorie, scales = "free_y") +
+  labs(title = "Feinere Aufteilung (5+1) pro Richtung",
+       y = "Anzahl Fahrzeuge", x = "Zeit in Tagen")
+
+```
+## Beobachtungen aus 5+1 auf Tagesebene:
+- Richtung 1 schwankt bei allen Klassen deutlich stärker (größre Varianz) als Richtung 2
+- überall Wochensaison erkennbar
+- PKW
+  - mit Abstand das größte Aufkommen (ca. 8000/Tag) -> dadurch auch größte Streuung bei R1
+  - trotzdem stabile Struktur
+- LKW (oA)
+  - kaum Schwankungen erkennbar (ca.250/Tag)
+  - geringes Aufkommen, aber für Wirtschaft/Struktur evtl. interessant
+- LKW (mA)
+  - geringe Schwankungen
+  - höheres Aufkommen als LKW (oA) -> ca. 1500/Tag
+- Busse
+  - geringe Schwankungen
+  - evtl. für ÖPNV interessant
+- PKW (mA)
+  - aufällige Saisonalität erkennbar -> Sommer mehr als Winter
+  - ca. 150/Tag
+- nicht klassifizierrbare
+  - ein deutlich größerer Wert bei R2 erkennbar 
+  - ca. 200/Tag
+
+
+## Überlegungen für weiteres Vorgehen
+
+### Worauf Fokus? Welche Klassen sinnvoll (Zahlen, Hintergrund)?
+- PKW
+  - generell relevant
+  - mit Anhänger, geringes Aufkommen, viel Rauschen
+- LKW mit Anhänger
+  - ohne Anähnger ähnliche Struktur, aber weniger Aufkommen, deswegen Entscheidung für LKW mit Anhänger
+  - wirtschafltich interessant
+- Busse
+  - zwar geringe Zahl, aber nochmal andere Struktur als PKW und LKW
+  - für ÖPNV interessant
+Nicht klassifizierbare Fahrzeuge werden ebenfalls nicht weiter betrachtet. Eine Prognose wäre hier aufgrund der verschiedenen Fahrzeuge nicht sinnvoll.
+
+```{r, echo=T}
+# 5+1 (beide Richtung)
+traffic_pkw_lkw_bus_ts <- df %>%
+  group_by(Datum_tag) %>%
+  summarise(
+    #Nicht_klassifizierbar_R1 = sum(Son_R1, na.rm = TRUE),
+    #Nicht_klassifizierbar_R2 = sum(Son_R2, na.rm = TRUE),
+    Pkw_Gruppe_R1 = sum(Pkw_R1, Lfw_R1, Mot_R1, na.rm = TRUE),
+    Pkw_Gruppe_R2 = sum(Pkw_R2, Lfw_R2, Mot_R2, na.rm = TRUE),
+    #Pkw_mit_Anh_R1 = sum(PmA_R1, na.rm = TRUE),
+    #Pkw_mit_Anh_R2 = sum(PmA_R2, na.rm = TRUE),
+    #Lkw_ohne_Anh_R1 = sum(LoA_R1, na.rm = TRUE),
+    #Lkw_ohne_Anh_R2 = sum(LoA_R2, na.rm = TRUE),
+    Lkw_mA_R1 = sum(Lzg_R1, Sat_R1, na.rm = TRUE),
+    Lkw_mA_R2 = sum(Lzg_R2, Sat_R2, na.rm = TRUE),
+    Busse_R1 = sum(Bus_R1, na.rm = TRUE),
+    Busse_R2 = sum(Bus_R2, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  as_tsibble(index = Datum_tag)
+```
+
+```{r, echo=T}
+# Pkw
+pkw_R1_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Pkw_Gruppe_R1) %>%
+  as_tsibble(index = Datum_tag)
+
+pkw_R2_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Pkw_Gruppe_R2) %>%
+  as_tsibble(index = Datum_tag)
+
+# Lkw
+lkw_R1_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Lkw_mA_R1) %>%
+  as_tsibble(index = Datum_tag)
+
+lkw_R2_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Lkw_mA_R2) %>%
+  as_tsibble(index = Datum_tag)
+
+# Busse
+bus_R1_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Busse_R1) %>%
+  as_tsibble(index = Datum_tag)
+
+bus_R2_ts <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Busse_R2) %>%
+  as_tsibble(index = Datum_tag)
+```
+
+```{r, echo=T}
+traffic_r2_long <- traffic_pkw_lkw_bus_ts %>%
+  select(Datum_tag, Pkw_Gruppe_R2, Lkw_mA_R2, Busse_R2) %>%
+  pivot_longer(
+    cols = c(Pkw_Gruppe_R2, Lkw_mA_R2, Busse_R2),
+    names_to = "Fahrzeugklasse",
+    values_to = "Anzahl"
+  ) %>%
+  mutate(
+    Fahrzeugklasse = recode(Fahrzeugklasse,
+      "Pkw_Gruppe_R2" = "Cars",
+      "Lkw_mA_R2" = "Trucks",
+      "Busse_R2" = "Buses"
+    )
+  ) %>%
+  as_tsibble(index = Datum_tag, key = Fahrzeugklasse)
+
+# Ersten 28 Tage
+traffic_r2_4w <- traffic_r2_long %>%
+  filter(Datum_tag <= min(Datum_tag) + 27)
+
+# Plot
+autoplot(traffic_r2_4w, Anzahl) +
+  facet_wrap(~ Fahrzeugklasse, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Traffic Direction 2",
+    x = "Time in Days",
+    y = "Number of Vehicles per Day"
+  ) +
+  guides(color = guide_legend(title = "Vehicle Classes"))
+```
+### Prognosezeitraum
+Die Daten sind jetzt auf Tagesebene (also 365 Datenpunkte). Es liegt eine Wochensaison vor, die sich 51x wiederholt. Erlaubt robuste Modellschätzung. Für Prognosezeitraum werden vier Wochen gewählt, um zu bewerten, ob die Wochensaison gut prognostiziert wird. Länger Zeitraum wäre aufgrund mehrerer Faktoren schwierig (Karneval, Ostern...)).
+(Wie Feiertage an Modell übergebenm)
+  
+
+
+
+
+# Benchmarks
+
+## Trainings-/Testsplit
+- 80/20 Trainings-/Teststplit
+```{r, echo=T}
+h <- 35
+
+end_date <- max(traffic_kfz_ts$Datum_tag)
+start_test <- end_date - h + 1
+
+# PKW/LKW/Bus (5+1)
+#train_pkw_lkw_bus <- traffic_pkw_lkw_bus_ts %>% filter(Datum_tag < start_test)
+#test_pkw_lkw_bus  <- traffic_pkw_lkw_bus_ts %>% filter(Datum_tag >= start_test)
+
+
+# PKW
+train_pkw_R1 <- pkw_R1_ts %>% filter(Datum_tag < start_test)
+test_pkw_R1  <- pkw_R1_ts %>% filter(Datum_tag >= start_test)
+
+train_pkw_R2 <- pkw_R2_ts %>% filter(Datum_tag < start_test)
+test_pkw_R2  <- pkw_R2_ts %>% filter(Datum_tag >= start_test)
+
+# LKW
+train_lkw_R1 <- lkw_R1_ts %>% filter(Datum_tag < start_test)
+test_lkw_R1  <- lkw_R1_ts %>% filter(Datum_tag >= start_test)
+
+train_lkw_R2 <- lkw_R2_ts %>% filter(Datum_tag < start_test)
+test_lkw_R2  <- lkw_R2_ts %>% filter(Datum_tag >= start_test)
+
+# Busse
+train_bus_R1 <- bus_R1_ts %>% filter(Datum_tag < start_test)
+test_bus_R1  <- bus_R1_ts %>% filter(Datum_tag >= start_test)
+
+train_bus_R2 <- bus_R2_ts %>% filter(Datum_tag < start_test)
+test_bus_R2  <- bus_R2_ts %>% filter(Datum_tag >= start_test)
+
+```
+
+## Naive Methoden
+```{r, echo=T}
+#models_pkw_lkw_bus <- train_pkw_lkw_bus %>%
+  #model(
+    #mean   = MEAN(Pkw_Gruppe_R1),
+    #naive  = NAIVE(Pkw_Gruppe_R1),
+    #snaive = SNAIVE(Pkw_Gruppe_R1 ~ period("7 days")),
+    #drift  = RW(Pkw_Gruppe_R1 ~ drift())
+  #)
+
+#fc_pkw_lkw_bus <- models_pkw_lkw_bus %>% forecast(h = h)
+
+# PKW
+models_pkw_R1 <- train_pkw_R1 %>%
+  model(
+    mean   = MEAN(Pkw_Gruppe_R1),
+    naive  = NAIVE(Pkw_Gruppe_R1),
+    snaive = SNAIVE(Pkw_Gruppe_R1),
+    drift  = RW(Pkw_Gruppe_R1 ~ drift())
+  )
+fc_pkw_R1 <- models_pkw_R1 %>% forecast(h = h)
+
+models_pkw_R2 <- train_pkw_R2 %>%
+  model(
+    mean   = MEAN(Pkw_Gruppe_R2),
+    naive  = NAIVE(Pkw_Gruppe_R2),
+    snaive = SNAIVE(Pkw_Gruppe_R2),
+    drift  = RW(Pkw_Gruppe_R2 ~ drift())
+  )
+fc_pkw_R2 <- models_pkw_R2 %>% forecast(h = h)
+
+
+# LKW
+models_lkw_R1 <- train_lkw_R1 %>%
+  model(
+    mean   = MEAN(Lkw_mA_R1),
+    naive  = NAIVE(Lkw_mA_R1),
+    snaive = SNAIVE(Lkw_mA_R1),
+    drift  = RW(Lkw_mA_R1 ~ drift())
+  )
+fc_lkw_R1 <- models_lkw_R1 %>% forecast(h = h)
+
+models_lkw_R2 <- train_lkw_R2 %>%
+  model(
+    mean   = MEAN(Lkw_mA_R2),
+    naive  = NAIVE(Lkw_mA_R2),
+    snaive = SNAIVE(Lkw_mA_R2),
+    drift  = RW(Lkw_mA_R2 ~ drift())
+  )
+fc_lkw_R2 <- models_lkw_R2 %>% forecast(h = h)
+
+
+# Bus
+models_bus_R1 <- train_bus_R1 %>%
+  model(
+    mean   = MEAN(Busse_R1),
+    naive  = NAIVE(Busse_R1),
+    snaive = SNAIVE(Busse_R1),
+    drift  = RW(Busse_R1 ~ drift())
+  )
+fc_bus_R1 <- models_bus_R1 %>% forecast(h = h)
+
+models_bus_R2 <- train_bus_R2 %>%
+  model(
+    mean   = MEAN(Busse_R2),
+    naive  = NAIVE(Busse_R2),
+    snaive = SNAIVE(Busse_R2),
+    drift  = RW(Busse_R2 ~ drift())
+  )
+fc_bus_R2 <- models_bus_R2 %>% forecast(h = h)
+
+```
+
+
+
+
+### PKW/LKW/Bus
+```{r, echo=T}
+#fc_pkw_lkw_bus %>%
+  #autoplot(train_pkw_lkw_bus, level = NULL) +
+  #autolayer(test_pkw_lkw_bus, Pkw_Gruppe_R1, color = "black") +
+  #facet_wrap(~Kategorie, scales = "free_y") +
+  #labs(title = "Forecasts 5+1-Kategorien", y = "Anzahl Fahrzeuge pro Tag", x = "Datum") +
+  #guides(color = guide_legend(title = "Modell"))
+
+# PKW
+fc_pkw_R1 %>%
+  autoplot(train_pkw_R1, level = NULL) +
+  autolayer(test_pkw_R1, Pkw_Gruppe_R1, color = "black") +
+  labs(title = "Forecast PKW R1", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+fc_pkw_R2 %>%
+  autoplot(train_pkw_R2, level = NULL) +
+  autolayer(test_pkw_R2, Pkw_Gruppe_R2, color = "black") +
+  labs(title = "Forecast PKW R2", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+# LKW
+fc_lkw_R1 %>%
+  autoplot(train_lkw_R1, level = NULL) +
+  autolayer(test_lkw_R1, Lkw_mA_R1, color = "black") +
+  labs(title = "Forecast LKW R1", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+fc_lkw_R2 %>%
+  autoplot(train_lkw_R2, level = NULL) +
+  autolayer(test_lkw_R2, Lkw_mA_R2, color = "black") +
+  labs(title = "Forecast LKW R2", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+# Bus
+fc_bus_R1 %>%
+  autoplot(train_bus_R1, level = NULL) +
+  autolayer(test_bus_R1, Busse_R1, color = "black") +
+  labs(title = "Forecast Bus R1", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+fc_bus_R2 %>%
+  autoplot(train_bus_R2, level = NULL) +
+  autolayer(test_bus_R2, Busse_R2, color = "black") +
+  labs(title = "Forecast Bus R2", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+```
+### Metriken
+```{r, echo=T}
+#accuracy(fc_pkw_lkw_bus, test_pkw_lkw_bus)
+
+acc_pkw_R1 <- accuracy(fc_pkw_R1, test_pkw_R1)
+acc_pkw_R2 <- accuracy(fc_pkw_R2, test_pkw_R2)
+
+acc_lkw_R1 <- accuracy(fc_lkw_R1, test_lkw_R1)
+acc_lkw_R2 <- accuracy(fc_lkw_R2, test_lkw_R2)
+
+acc_bus_R1 <- accuracy(fc_bus_R1, test_bus_R1)
+acc_bus_R2 <- accuracy(fc_bus_R2, test_bus_R2)
+
+list(acc_pkw_R1, acc_pkw_R2, acc_lkw_R1, acc_lkw_R2, acc_bus_R1, acc_bus_R2)
+```
+
+## Auswertung
+Geringster RMSE pro Klasse und Richtung:
+- PKW R1: Snaive
+- PKW R2: Snaive
+- LKW R1: Snaive
+- LKW R2: Mean (aber kaum besser als Snaive)
+- Bus R1: Snaive
+- Bus R2: Mean (aber kaum besser als Snaive)
+Bei den PKW ist die saisonale Methode, die mit dem geringsten RMSE in beide Richtungen. Bei den LKW und Bussen Richtung 1 zeigt Snaive ebenfalls die geringsten Werte auf. In Richtung 2 weist die Mean Methode leicht bessere Werte als die Snaive Methode auf.
+
+
+## Anmerkung
+Aufgrund der ähnlichen aber entgegengestzten Dynamiken der beiden Richtungen (z.B. freitags stärkerer Verkehr in Richtung 1 und sonntags stärkerer Verkehr in Richtung 2) und augrund von Zeit und Aufwand, ohne dadurch relevante Erkenntnisse gewinnen zu würden, wird im Folgenden nur noch mit den drei Fahrzeugklassen PKW, LKW mit Anhänger und Bus in Richtung 2 gearbeitet. Richtung 2 wird aufgrund der geringeren Streuung gewählt.
+
+
+
+
+
+
+
+# ETS
+## Theretische Überlegungen
+- Error
+  - N: kein Sinn, da Fehler vorhanden
+  - A: sinnvoll da geleichmäßiger Varianz
+  - M: sinvoll, wenn Vrianz mit Level steigt (eher nicht der Fall, aber testen)
+- Trend
+  - N: sinvoll, da Trend kaum vorhanden, eher Saisonalität
+  - A: - (wäre sinnvoll bei linearem Wachstum)
+  - Ad:- (wäre sinnvoll bei linearem Wachstum mit Dämpfung)
+  - M: - (wäre sinnvoll bei exp. Wachstum)
+- Saisonalität
+  - N: - (da Saisonalität vorhanden)
+  - A: sinvoll, da sich saisonale Effekte (Sommer/Winter) zum Niveau addieren
+  - M: sinvoll, wenn sich saisonale Effekte prozentual wirken (eher nicht der Fall, aber testen)
+
+-> Folgende ETS() Modelle testen:
+- ANA -> beste Erfolgschancen
+- ANM
+- MNA
+- MNM
+  
+  
+### Bedingungen erfüllt?
+- keine Abruppten Änderungen
+- keine extremen Ausreißer(/auffällige einzelne Werte) erkennbar
+- stabile Varianz
+- aber Feiertage, Ferien etc. erkennbar (seperat berücksichtigen oder erweitern -> ETSX?)
+
+## Praxis
+### Modelle
+```{r, echo=T}
+# PKW R2
+fit_pkw_R2 <- pkw_R2_ts %>% #fit_pkw_R2_ets besser
+  model(
+    ANA = ETS(Pkw_Gruppe_R2 ~ error("A") + trend("N") + season("A")),
+    ANM = ETS(Pkw_Gruppe_R2 ~ error("A") + trend("N") + season("M")),
+    MNA = ETS(Pkw_Gruppe_R2 ~ error("M") + trend("N") + season("A")),
+    MNM = ETS(Pkw_Gruppe_R2 ~ error("M") + trend("N") + season("M"))
+  )
+
+# LKW R2
+fit_lkw_R2 <- lkw_R2_ts %>%
+  model(
+    ANA = ETS(Lkw_mA_R2 ~ error("A") + trend("N") + season("A")),
+    ANM = ETS(Lkw_mA_R2 ~ error("A") + trend("N") + season("M")),
+    MNA = ETS(Lkw_mA_R2 ~ error("M") + trend("N") + season("A")),
+    MNM = ETS(Lkw_mA_R2 ~ error("M") + trend("N") + season("M"))
+  )
+
+# Bus R2
+fit_bus_R2 <- bus_R2_ts %>%
+  model(
+    ANA = ETS(Busse_R2 ~ error("A") + trend("N") + season("A")),
+    ANM = ETS(Busse_R2 ~ error("A") + trend("N") + season("M")),
+    MNA = ETS(Busse_R2 ~ error("M") + trend("N") + season("A")),
+    MNM = ETS(Busse_R2 ~ error("M") + trend("N") + season("M"))
+  )
+```
+
+
+### Forecasts
+```{r, echo=T}
+fc_pkw_R2_ets <- fit_pkw_R2 %>%
+  forecast(new_data = test_pkw_R2)
+
+fc_lkw_R2_ets  <- fit_lkw_R2 %>%
+  forecast(new_data = test_lkw_R2)
+
+fc_bus_R2_ets  <- fit_bus_R2 %>%
+  forecast(new_data = test_bus_R2)
+```
+
+### Plots
+(Für grobe Vorstellung vorerst ohne Kofidenzintervalle -> später dann mit)
+```{r, echo=T}
+#fc_pkw_R2_ets <- fit_pkw_R2 %>%
+  #forecast(new_data = test_pkw_R2, level = c(80, 95))
+
+# PKW R2
+fc_pkw_R2_ets %>%
+  autoplot(train_pkw_R2, level = NULL) +
+  autolayer(test_pkw_R2, Pkw_Gruppe_R2, color = "black") +
+  labs(title = "Forecast PKW R2 (ETS)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Datum") +
+  guides(color = guide_legend(title = "Modell"))
+
+# LKW R2
+fc_lkw_R2_ets %>%
+  autoplot(train_lkw_R2, level = NULL) +
+  autolayer(test_lkw_R2, Lkw_mA_R2, color = "black") +
+  labs(title = "Forecast LKW R2 (ETS)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+# Bus R2
+fc_bus_R2_ets %>%
+  autoplot(train_bus_R2, level = NULL) +
+  autolayer(test_bus_R2, Busse_R2, color = "black") +
+  labs(title = "Forecast Bus R2 (ETS)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+```
+
+
+## Bewertung der Modelgüte
+### AIC, AICc und BIC
+```{r, echo=T}
+report(fit_pkw_R2)
+report(fit_lkw_R2)
+report(fit_bus_R2)
+```
+
+### MAE und RMSE
+```{r, echo=T}
+# In-smple accuracy (Trainingsdaten)
+acc_pkw_R2_ets_train <- accuracy(fit_pkw_R2)
+acc_lkw_R2_ets_train <- accuracy(fit_lkw_R2)
+acc_bus_R2_ets_train <- accuracy(fit_bus_R2)
+
+# Out-of sample accuracy (Forecast, Testdaten)
+acc_pkw_R2_ets_test <- accuracy(fc_pkw_R2_ets, test_pkw_R2)
+acc_lkw_R2_ets_test <- accuracy(fc_lkw_R2_ets, test_lkw_R2)
+acc_bus_R2_ets_test <- accuracy(fc_bus_R2_ets, test_bus_R2)
+
+list(acc_pkw_R2_ets_train, acc_lkw_R2_ets_train, acc_bus_R2_ets_train, acc_pkw_R2_ets_test, acc_lkw_R2_ets_test, acc_bus_R2_ets_test)
+```
+
+### Residuenanalyse (Hist, ACF, Ljung Box)
+```{r, echo=T}
+fit_pkw_R2 %>% select(ANM) %>% gg_tsresiduals()
+fit_lkw_R2 %>% select(ANM) %>% gg_tsresiduals()
+fit_lkw_R2 %>% select(MNM) %>% gg_tsresiduals() #besser
+fit_bus_R2 %>% select(ANM) %>% gg_tsresiduals()
+```
+```{r, echo=T}
+# PKW ETS(ANM)
+#Box.test(res_pkw$.resid, type = "Ljung-Box", lag = 20)
+# LKW ETS(ANM)
+#Box.test(res_lkw_mnm$.resid, type = "Ljung-Box", lag = 20)
+# LKW ETS(MNM)
+#Box.test(res_lkw_anm$.resid, type = "Ljung-Box", lag = 20)
+# Bus ETS(ANM)
+#Box.test(res_bus$.resid, type = "Ljung-Box", lag = 20)
+```
+Aufgrund von Fehlern beim Knitten ist der Ljung Box Test hier nur auskommentiert. Der Code läuft aber und auf die Ergebnisse wird im Folgenden eingegangen.
+
+## Erkenntnisse
+### Geringste AIC(c) und BIC Werte in jeweiliger Klasse:
+- PKW: ANM (-> gut weil Varianz stabil)
+- LKW: MNM (-> stärkerer Schwankungen proportional zum Level)
+- Bus: ANM 
+
+### MAE und RMSE
+Wo RMSE (und MAE) am Kleinsten
+(In Smmple:)
+- PKW: ANM (MAE bei ANA am Kleinsten)
+- LKW: ANM
+- Bus: ANM
+
+Out Sample:
+- PKW: ANM
+- LKW: ANM
+- Bus: ANM (MAE bei MNA am Kleinsten)
+
+
+### Residuenanalyse
+
+PKW ETS(ANM)
+- Zeitreihe der Residuen: schwanken um Null, aber größere Ausschläge sichtbar (besonder durch Feiertage: Ostern, Tag der Deutschen Einheit, Weihnachte etc. sind klar erkennbar)
+- ACF Plot: Werte schlagen bei den PKW zu Beginn über die Intervallgrenzen nach unten aus und einmal bei Lag 11 nach oben; isnegsamt aber kein starkes Muster zu erkennen (keine systematische Autokorrelation)
+- Histogramm: normalverteilt, links etwas länger als rechts (Modell unterschätzt PKW Anzahl an manchen Tagen)
+
+Das Modell erfasst einen Großteil der Varianz (aber keine Feiertage) und es erklärt die Abhängigkeit der Serie recht gut (fast alle WErte liegen innerhalb der Konfidenzintervalle). Das Histogramm zeigt mit seiner rechtsschiefen Verteilung, dass das Modell die Anzahl der PKW an einigen Tagen unterschätzt, was sich mit der Zeitreihe der Residuen deckt (Feiertage -> mehr Verkehr).
+
+
+LKW ETS(ANM)
+- Zeitreihe der Residuen: schwanken insgesamt um Null, aber auch hier Werte an Feiertagen die das Modell unterschätzt (Ostern, Christi Himmelfahrt, Pfingsten und Frohenleichnam -> auch Reformationstag fällt auf, obwohl in NRW kein gestzlicher Feiertag); wirken stabil (Stabiler als PKW)
+- ACF Plot: Werte schlagen leicht bei 10,11 und 21 aus, asnonsten keine Auffälligkeiten (Wochensaison von Model noch nicht erkannt)
+- Histogramm: weist eine grobe Normalverteillung auf, stark linksschief (mehrere kleine Werte bis weit auf der linken Seite) durch einige sehr starke negative Werte
+
+Auch hier erfasst das Modell einen großen Teil der Varianz, die Residuen zeigen deutlich weniger Streuung als bei den PKW, aber auch hier fallen die Feiertage auf. Der ACF plot ist weitgehend unauffällig, es scheint aber so, dass das Modell die Wochensaison noch nicht ganz erfasst hat. Die Linksschiefe im Histogramm zeigt, dass das Modell die Anzahl der LKW an manchen Tagen überschätzt, was sinn ergibt, wenn es die Wochensaison noch nicht erfasst hat, das LKW eher werktags unterwegs sind. Dies deckt sich außerdem mit den Beobachtungen in der Zeitreihe der Residuen.
+
+
+Bus ETS(ANM)
+- Zeitreihe der Residuen: einige Werte die etwas weiter nach unten ausschlagen
+- ACF Plot: Lags bei 1,7 und 21
+- Histogramm: normalverteilt, aber links länger als rechts
+
+Auch hier wird die Varianz zum Großteil erfasst und die Resdiuden schwanken um Null. Die Feiertage machen sich ebenfalls durch auffallende negative Werte in der Zeitreihe der Residuen bemerkbar. Die Ausschläge im ACF Plot weisen auf eine schwache Autokorrelation hin, das Wochenmuster wurde noch nicht vollständig erkannt, was auch die Linksschiefe im Histogramm erklärt. Das Aufkommen an Bussen wird an manchen Tagen überschätzt, was ebenfalls Sinn ergibt, das die Buspläne sich werktags, samstags, sonntags/an Feiertagen unterscheiden.
+
+
+### Ljung Box Test
+- PKW ETS(ANM): da der p value unter 0.05 liegt, wird die Nullhypothese abgelehnt. Die Residuen sind signifikant autokorreliert (das Modell erfasst noch nicht alle Strukturen).
+- LKW ETS(ANM): der p vlaue liegt über 0.05. Die Nullyhpothese wird angenommen. Es liegt keine signifikatne Autokorrelation vor, das Modell erfasst die Strukturen bereits gut.
+- LKW ETS(MNM): Die Residuen sind autokorreliert. Das Modell erfasst (wahrscheinlich die Wochensaison) nicht vollständig.
+- Bus ETS(ANM): Die Residuen sind autokorreliert. Es ist eine schwache Autokorrelation vorhanden.
+
+
+
+
+### Resdiuen vs. fitted values
+```{r, echo=T}
+plot_resid_vs_fitted <- function(fit_obj, title = "Residuals vs Fitted") {
+  resid_df <- fit_obj %>%
+    augment() %>%
+    as.data.frame() %>%
+    select(.fitted, .resid)
+  
+  ggplot(resid_df, aes(x = .fitted, y = .resid)) +
+    geom_point(alpha = 0.6) +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    labs(title = title,
+         x = "Fitted values",
+         y = "Residuals") +
+    theme_minimal()
+}
+
+plot_resid_vs_fitted(fit_pkw_R2 %>% select(ANM), "PKW ETS(ANM)")
+plot_resid_vs_fitted(fit_lkw_R2 %>% select(MNM), "LKW ETS(MNM)")
+plot_resid_vs_fitted(fit_bus_R2 %>% select(ANM), "Bus ETS(ANM)")
+```
+Es wird deutlich, dass einige Effekte (wahrscheinlich Feiertage, Wochenstruktur, Ferien) vom Modell nicht erkannt werden. Gerade bei LKW und Bussen gibt es auffällige negative Residuen, die zeigen, dass das Modell das Aufkommen an manchen Tagen überschätzt.  
+Bei LKW und Bussen sind einige stark negative Residuen zu erkennen, die auf eine leichte Heteroskedastizität hinweisen. Da es sich dabei jedoch nur um wenige Ausreißer handelt und die meisten Residuen um Null streuen, wird keine Transformation der Zeitreihe vorgenommen, da der Einfluss auf das Modellverhalten minimal ist.
+
+
+### $\alpha$ und $\gamma$ Werte
+```{r, echo=T}
+# PKW R2 - ETS(ANM)
+fit_pkw_R2 %>% select(ANM) %>% tidy()
+#report(fit_pkw_R2 %>% select(ANM))
+
+# LKW R2 - ETS(MNM)
+fit_lkw_R2 %>% select(MNM) %>% tidy()
+#report(fit_lkw_R2 %>% select(MNM))
+
+# Bus R2 - ETS(ANM)
+fit_bus_R2 %>% select(ANM) %>% tidy()
+#report(fit_lkw_R2 %>% select(ANM))
+```
+Interpretation der Glättungsparameter $\alpha$ für die drei Modell der jeweiligen Fahzeugklasse:
+- PKW (Alpha = 0,337): Das Modell reagiert relativ stark auf neue Datenpunkte und passt das Level der Zeitreihe relativ schnell an, was bei kurzfristigen Schwankungen, wie Feiertagen Sinn ergibt.
+- LKW (Alpha = 0,147): Das Modell reagiert nur leicht auf neue Beobachtungen, was dadurch zu erklären ist, dass die LKW-Zahlen stabiler sind als z.B. bei den PKW und weniger kaum kurzfristige Schwankungen haben. (-> Regelmäßigkeit durch Lieferketten)
+- Bus (Alpha = 0,169): Auch hier ist der Wert relativ gering und das Modell regiert nur leicht auf neue Beobachtungen, was ebenfalls Sinn ergibt, da z.B. durch feste Fahrpläne im ÖPNV weniger Schwankungen entstehen.
+
+Die geschätzten Alpha-Werte zeigen, dass das PKW-Modell stärker auf kurzfristige Schwankungen reagiert, während die LKW- und Bus-Modelle eher stabile Level annehmen und weniger empfindlich auf einzelne Ausreißer reagieren.
+
+
+
+## Beste Modelle
+Insgesamt ist zu erkennen, dass das ETS(ANM) Modell bei PKW, LKW und Bussen die beste Anpassung aufweist, sowie die beste Prgnosegüte liefern. Was über alle Modelle hinweg auffällt ist die Überschätzung des Verkehrsaufkommens an einzelnen Tagen, die meist auf Feiertage zurückzuführen sind. Im Folgenden einmal die besten Modelle für die drei Klassen:
+
+```{r, echo=T}
+# PKW R2 - ETS(ANM)
+fc_pkw_R2_ets_best <- fit_pkw_R2 %>% select(ANM) %>% forecast(new_data = test_pkw_R2)
+fc_pkw_R2_ets_best %>%
+  autoplot(train_pkw_R2, level = c(80,95)) +
+  autolayer(test_pkw_R2, Pkw_Gruppe_R2, color = "black") +
+  labs(title = "Forecast PKW R2 - ETS(ANM)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Datum") +
+  guides(color = guide_legend(title = "Modell"))
+
+# LKW R2 - ETS(MNM)
+fc_lkw_R2_ets_best <- fit_lkw_R2 %>% select(MNM) %>% forecast(new_data = test_lkw_R2)
+fc_lkw_R2_ets_best %>%
+  autoplot(train_lkw_R2, level = c(80, 95)) +
+  autolayer(test_lkw_R2, Lkw_mA_R2, color = "black") +
+  labs(title = "Forecast LKW R2 - ETS(MNM)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Datum") +
+  guides(color = guide_legend(title = "Modell"))
+
+# Bus R2 - ETS(ANM)
+fc_bus_R2_ets_best <- fit_bus_R2 %>% select(ANM) %>% forecast(new_data = test_bus_R2)
+fc_bus_R2_ets_best %>%
+  autoplot(train_bus_R2, level = c(80, 95)) +
+  autolayer(test_bus_R2, Busse_R2, color = "black") +
+  labs(title = "Forecast Bus R2 - ETS(ANM)", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Datum") +
+  guides(color = guide_legend(title = "Modell"))
+```
+
+### Vergleich von ETS Modellen und Naiven Methoden
+```{r, echo=T}
+# CRPS für Benchmarks
+rmse_pkw_R2_bench <- acc_pkw_R2 %>%
+  filter(.model == "snaive", .type == "Test") %>%
+  
+  
+  pull(RMSE)
+
+rmse_lkw_R2_bench <- acc_lkw_R2 %>%
+  filter(.model == "mean", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_bus_R2_bench <- acc_bus_R2 %>%
+  filter(.model == "mean", .type == "Test") %>%
+  pull(RMSE)
+
+
+# CRPS für ETS Model
+rmse_pkw_R2_model <- acc_pkw_R2_ets_test %>% # besser ets statt model bei benennung
+  filter(.model == "ANM", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_lkw_R2_model <- acc_lkw_R2_ets_test %>%
+  filter(.model == "MNM", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_bus_R2_model <- acc_bus_R2_ets_test %>%
+  filter(.model == "ANM", .type == "Test") %>%
+  pull(RMSE)
+
+# Skill Score
+skill_rmse_pkw_R2 <- (rmse_pkw_R2_bench - rmse_pkw_R2_model) / rmse_pkw_R2_bench
+skill_rmse_pkw_R2
+
+skill_rmse_lkw_R2 <- (rmse_lkw_R2_bench - rmse_lkw_R2_model) / rmse_lkw_R2_bench
+skill_rmse_lkw_R2
+
+skill_rmse_bus_R2 <- (rmse_bus_R2_bench - rmse_bus_R2_model) / rmse_bus_R2_bench
+skill_rmse_bus_R2
+```
+Skill score:
+- PKW (ETS-ANM): Das Modell schneidet 3,234 % schlechter ab als die Snaive-Methode. Der Unterschied ist jedoch nur gering.
+- LKW (ETS-MNM): Das Modell erzielt eine 9,741 % bessere Prognosegüte als die Mean-Methode. Der Vorteil ist moderat, aber erkennbar.
+- Busse (ETS-ANM): Das Modell ist 13,415 % besser als die Mean-Methode und damit klar das bessere Modell.
+
+## Fazit
+Insgesamt weisen die ETS Modelle unterschiedliche Prognosegüten je nach Fahzeugklasse auf. Bei den PKW ist die naive Benchmark weiterhin die überlegene Methode, während die ETS Modelle bei LKW und Bussen zu einer verbesserten Prognosegüte führen.
+Die Resdiuenanalyse zeigt allerdings, dass sowohl die Auswirkung von Feiertagen, als auch wöchentliche Muster nicht vollständig erfasst werden und zum Teil Autokorelation vorhanden bleibt
+Da ETS Modelle ausschließlich auf expoentieller Glättung basieren und keine autoregressiven oder gleitenden Abhängigkeiten berücksichtigen, werden im nächsten Schritt ARIMA Modelle aufgstellt, die eine Modellierung der Autokorrelation ermöglichen und sich somit besser eignen, um auch die Wochensaison zu erfassen.
+Die folgende Tabelle fasst die wichtigsten Parameter der besten ETS-Modelle je Fahrzeugklasse zusammen, inklusive der geschätzten Glättungsparameter und des Skill-Scores im Vergleich zur jeweiligen Benchmark-Methode.
+
+```{r, echo=T}
+# Alpha Werte von ETS Modellen
+alpha_pkw <- fit_pkw_R2 %>% select(ANM) %>% tidy() %>% filter(term == "alpha") %>% pull(estimate)
+alpha_lkw <- fit_lkw_R2 %>% select(MNM) %>% tidy() %>% filter(term == "alpha") %>% pull(estimate)
+alpha_bus <- fit_bus_R2 %>% select(ANM) %>% tidy() %>% filter(term == "alpha") %>% pull(estimate)
+
+gamma_pkw <- fit_pkw_R2 %>% select(ANM) %>% tidy() %>% filter(term == "gamma") %>% pull(estimate)
+gamma_lkw <- fit_lkw_R2 %>% select(MNM) %>% tidy() %>% filter(term == "gamma") %>% pull(estimate)
+gamma_bus <- fit_bus_R2 %>% select(ANM) %>% tidy() %>% filter(term == "gamma") %>% pull(estimate)
+
+alpha_values <- c(alpha_pkw, alpha_lkw, alpha_bus)
+gamma_values <- c(gamma_pkw, gamma_lkw, gamma_bus)
+fahrzeugklasse <- c("PKW", "LKW", "Bus")
+ets_model <- c("ANM", "MNM", "ANM")
+benchmark <- c("SNaive", "Mean", "Mean")
+
+# Tabelle
+ets_summary <- tibble(
+  Fahrzeugklasse = fahrzeugklasse,
+  ETS_Modell = ets_model,
+  Alpha = round(alpha_values, 3), # Level
+  # kein betta, da kein Trend modelliert
+  Gamma = round(gamma_values, 3), # Saison
+  Benchmark = benchmark,
+  Skill_Score = round(c(skill_rmse_pkw_R2, skill_rmse_lkw_R2, skill_rmse_bus_R2),3)
+)
+
+ets_summary
+```
+
+
+
+
+
+
+
+
+
+
+# ARIMA
+## Theretische Überlegungen
+Bei den ETS Modellen ist besonders aufgefallen, dass die Wochenasaison und die Feiertage nicht erfasst worden sind. Da ARIMA explizit Autokorrelationenn modelliert sind diese wahscheinlich besser geeignet um diese Effekte zu erfassen.
+
+Erwartungen an die Fahrzeugklassen:
+- PKW: In der Zeitreihe liegen starke Schwankungen an Wochenenden und Feiertagen vor, sowie eine hohe Varianz an Werktagen. Das ARIMA Modell sollte die Autokorrelation über die Woche erfassen (Feiertage bleiben wahrscheinlich weiterhin problematisch -> ARIMAX?)
+- LKW: die Zeitriehe weist weniger Varianz und regelmäßige Muster auf. Ein ARIMA Modell sollte die struktur gut erkennen.
+- Busse: Bei Bussen ist ebenfalls eine starke Wochensaison zu erknennen, die erfasst werden sollte. Feiertage sind auch zu erknenn und könnten weitehrin problemtisch bleiben.
+SARIMA? -> Wochensaison
+
+
+
+## Stationarität (Bedigungen erfüllt?)
+
+### KPSS Test (1. Durchlauf)
+Stationaität mit KPSS Test prüfen.
+Nullhypothese: Daten sind stationär(!)
+```{r, echo=T}
+# Trainingsdaten
+
+# PKW R2
+train_pkw_R2 %>% features(Pkw_Gruppe_R2, unitroot_kpss)
+
+#  LKW R2
+train_lkw_R2 %>% features(Lkw_mA_R2, unitroot_kpss)
+
+# Bus R2
+train_bus_R2 %>% features(Busse_R2, unitroot_kpss)
+```
+Alle drei Zeitriehen der Fahrzeugklassen weisen einen Kpss value von 0.05 auf, daher wird die Nullhypothese wiederlegt. Die Zeitriehen sind nicht stationär, was durch die starke Wochensaison auch plausibel ist. Daher werdend die Daten im Folgenden differenziert.
+
+### Differenzierung (1. Durchlauf)
+```{r, echo=T}
+# Sasionale Differenzierung
+
+# PKW R2
+diff_pkw <- pkw_R2_ts %>%
+  mutate(diff = difference(Pkw_Gruppe_R2, lag = 7))
+
+# LKW R2
+diff_lkw <- lkw_R2_ts %>%
+  mutate(diff = difference(Lkw_mA_R2, lag = 7, differences = 2))
+
+# Bus R2
+diff_bus<- bus_R2_ts %>%
+  mutate(diff = difference(Busse_R2, lag = 7))
+```
+
+
+### KPSS Test (2. Durchlauf)
+```{r, echo=T}
+# PKW R2
+diff_pkw %>% features(Pkw_Gruppe_R2, unitroot_kpss)
+
+#  LKW R2
+diff_lkw %>% features(Lkw_mA_R2, unitroot_kpss)
+
+# Bus R2
+diff_bus %>% features(Busse_R2, unitroot_kpss)
+```
+Bei den PKW liegt der kpss value mit 0.01 weiterhin unter 0.05 und muss deshalb weiter differenziert werden. Bei LKw und Bussen liegt der kpss value über 0.05. Die Stationarität wurde bei den beiden erreicht.
+
+
+### Differenzierung (2. Durchlauf)
+```{r, echo=T}
+# PKW R2
+diff2_pkw <- diff_pkw %>%
+  mutate(diff2 = difference(diff, lag = 1))
+```
+
+
+### KPSS Test (3. Durchlauf)
+```{r, echo=T}
+# PKW R2
+diff2_pkw %>% features(diff2, unitroot_kpss)
+```
+Alle Zeitreihen sind jetzt stationär.
+LKW und Busse direkt nach saisonaler Differenzierung.
+PKW eine Differenzierung danach.
+
+
+
+### Pürung auf Extremwerte
+```{r, echo=T}
+#library(ggplot2)
+ggplot(train_pkw_R2, aes(x = Datum_tag, y = Pkw_Gruppe_R2)) +
+  geom_line() +
+  geom_point(data = subset(train_pkw_R2, Pkw_Gruppe_R2 > quantile(Pkw_Gruppe_R2, 0.99)),
+             aes(x = Datum_tag, y = Pkw_Gruppe_R2), color = "red")
+
+ggplot(train_lkw_R2, aes(x = Datum_tag, y = Lkw_mA_R2)) +
+  geom_line() +
+  geom_point(data = subset(train_lkw_R2, Lkw_mA_R2 > quantile(Lkw_mA_R2, 0.99)),
+             aes(x = Datum_tag, y = Lkw_mA_R2), color = "red")
+
+ggplot(train_bus_R2, aes(x = Datum_tag, y = Busse_R2)) +
+  geom_line() +
+  geom_point(data = subset(train_bus_R2, Busse_R2 > quantile(Busse_R2, 0.99)),
+             aes(x = Datum_tag, y = Busse_R2), color = "red")
+```
+Es sind einzelne extremere WErte zu Beginn der Zeitreihe vorhanden, Werte die außerhalb des 99% Quantils liegen. Da die Werte in das Muster zu Beginn der Zeitreihe passen und ARIMA Modelle außerdem relativ robust gegenüber Ausreißern sind  werden die Werte so beibehalten und nicht weiter behandelt. Die 4 extremsten Werte bei den LKW und Bussen sind noch weniger auffällig.
+
+
+
+
+## Praxis
+### Modelle
+```{r, echo=T}
+# PKW R2
+fit_pkw_arima <- train_pkw_R2 %>%
+  model(arima = ARIMA(Pkw_Gruppe_R2))
+report(fit_pkw_arima)
+
+# LKW R2
+fit_lkw_arima <- train_lkw_R2 %>%
+  model(arima = ARIMA(Lkw_mA_R2))
+report(fit_lkw_arima)
+
+# Bus R2
+fit_bus_arima <- train_bus_R2 %>%
+  model(arima = ARIMA(Busse_R2))
+report(fit_bus_arima)
+```
+
+### Forecasts
+```{r, echo=T}
+fc_pkw_arima <- fit_pkw_arima %>%
+  forecast(new_data = test_pkw_R2)
+
+fc_lkw_arima <- fit_lkw_arima %>%
+  forecast(new_data = test_lkw_R2)
+
+fc_bus_arima <- fit_bus_arima %>%
+  forecast(new_data = test_bus_R2)
+```
+### Plots
+```{r, echo=T}
+fc_pkw_arima %>%
+  autoplot(train_pkw_R2, level = NULL) +
+  autolayer(test_pkw_R2, Pkw_Gruppe_R2, color = "black") +
+  labs(title = "Forecast PKW R2 (ARIMA()()[])", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+fc_lkw_arima %>%
+  autoplot(train_lkw_R2, level = NULL) +
+  autolayer(test_lkw_R2, Lkw_mA_R2, color = "black") +
+  labs(title = "Forecast LKW R2 (ARIMA()()[])", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+fc_bus_arima %>%
+  autoplot(train_bus_R2, level = NULL) +
+  autolayer(test_bus_R2, Busse_R2, color = "black") +
+  labs(title = "Forecast Bus R2 (ARIMA()()[])", 
+       y = "Anzahl Fahrzeuge pro Tag", 
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+```
+
+
+## Bewertung der Modelgüte
+Heteroskedastisch
+Normalverteilt
+Um Null verteilt
+
+### AIC, AICc und BIC
+```{r, echo=T}
+report(fit_pkw_arima)
+report(fit_lkw_arima)
+report(fit_bus_arima)
+```
+AIC, BIC lliegen bei allen nah beieinander.
+
+### MAE und RMSE
+```{r, echo=T}
+# In-smple accuracy (Trainingsdaten)
+acc_pkw_R2_arima_train <- accuracy(fit_pkw_arima)
+acc_lkw_R2_arima_train <- accuracy(fit_lkw_arima)
+acc_bus_R2_arima_train <- accuracy(fit_bus_arima)
+
+# Out-of sample accuracy (Forecast, Testdaten)
+acc_pkw_R2_arima_test <- accuracy(fc_pkw_arima, test_pkw_R2)
+acc_lkw_R2_arima_test <- accuracy(fc_lkw_arima, test_lkw_R2)
+acc_bus_R2_arima_test <- accuracy(fc_bus_arima, test_bus_R2)
+
+list(acc_pkw_R2_arima_train, acc_lkw_R2_arima_train, acc_bus_R2_arima_train, acc_pkw_R2_arima_test, acc_lkw_R2_arima_test, acc_bus_R2_arima_test)
+```
+- PKW: noch deutlich unterprognostiziert (ME: -734), MAE RMSE ebenfalls reltiv groß -> hoher Fehler, leichte Autokorrelation (SARIMA wahrscheinlich besser) (ca. 12000 PKW pro Tag)
+- LKW: ebenfalls unterprognostiziert, aber weniger, Fehler ebnfalls geringer, Reisduen korrelieren stark (ACF: 0.666)  (ca. 2000 LKW pro Tag)
+- Bus: unterprognostiziert noch stärkere Autokorrelation
+
+ACF -> Autokorrelation (0.1, 0.3, 0.5 +-)
+Bei allen Autokorrelation vorhanden -> Strukturen werden nicht erfasst -> SARIMA
+
+### Residuenanalyse mit Zeit, ACF, Hist
+```{r, echo=T}
+fit_pkw_arima %>% select(arima) %>% gg_tsresiduals()
+fit_lkw_arima %>% select(arima) %>% gg_tsresiduals()
+fit_bus_arima %>% select(arima) %>% gg_tsresiduals()
+```
+PKW: Streung (-2000 bis 2000) da bei Zeitriehe der Residuen aber am Anfanng mehr als am Ende; ACF Werte über linie: 11,14,21, Historgramm gut normalverteilt
+LKW: Struung gering (einzelen Werte extrem), ACF: Lags deutlich bei 7 ncoh stärker bei 14, ganz leich drüber bei 10, 11, etwas weiter drüber bei 21; Histogramm an sich normalverteil um null,
+Busse: struung okay, wenige nach unten bei -70 (Feiertage wie bei PKW und LKW auch),ACF: keine Lags über Grenzne, Histogramm: normalverteilt um 0, wenige werte bei -100 und noch weniger bei 50
+
+
+```{r, echo=T}
+# LKW R2
+fit_lkw_arima_man <- train_lkw_R2 %>% 
+  model(arima = ARIMA(Lkw_mA_R2 ~ pdq(1,0,1) + PDQ(3,1,0))) #101 310
+report(fit_lkw_arima_man)
+```
+
+
+```{r, echo=T}
+fit_lkw_arima_man %>% select(arima) %>% gg_tsresiduals()
+```
+Ausschlag bei ACF Plot bei 11 bleibt, aber Wochensaison wurde erfasst, Normalverteilung der Residuen ist vorhande, wenn auch weiterhin durch Extremwerte im negaitvne Bereich durch Feiertage (gleiches Problem bei Zeitreihe der REsiduen)
+
+```{r, echo=T}
+# Forecast LKW ARIMA (manuell)
+fc_lkw_arima_man <- fit_lkw_arima_man %>% 
+  forecast(new_data = test_lkw_R2)
+
+acc_lkw_R2_arima_man_test <- accuracy(fc_lkw_arima_man, test_lkw_R2)
+acc_lkw_R2_arima_man_test
+```
+
+
+### Ljung Box Test
+```{r, echo=T}
+# Residuen aus Modellen
+res_pkw <- augment(fit_pkw_arima)
+res_lkw_auto <- augment(fit_lkw_arima)
+res_lkw_man <- augment(fit_lkw_arima_man)
+res_bus <- augment(fit_bus_arima)
+
+
+# PKW
+Box.test(res_pkw$.resid, type = "Ljung-Box", lag = 20)
+# LKW
+Box.test(res_lkw_auto$.resid, type = "Ljung-Box", lag = 20)
+# LKW - manuell
+Box.test(res_lkw_man$.resid, type = "Ljung-Box", lag = 20)
+# Bus
+Box.test(res_bus$.resid, type = "Ljung-Box", lag = 20)
+```
+Bei den beiden automatischen Modellen für PKW und Busse, sowie beim manuellen ARIMA Modell für die LKW ist keine signifikante Restautokorrelation mehr zu erkennen. Das automatische ARIMA Modell für die LKW erfasst die Wochenstruktur nciht vollständig, das manuelle Modell hingegeben, erfasst die Struktur deutlich besser (Forecast sollte stabiler sein).
+
+
+### Residuen vs. fitted Vlaues
+```{r, echo=T}
+plot_resid_vs_fitted(fit_pkw_arima %>% select(arima), "PKW ARIMA(0,1,1)(2,0,0)[7]")
+plot_resid_vs_fitted(fit_lkw_arima %>% select(arima), "LKW ARIMA(1,0,0)(1,1,0)[7] w/ drift")
+plot_resid_vs_fitted(fit_lkw_arima_man %>% select(arima), "LKW ARIMA(1,0,1)(3,1,0)[7] (manuell)")
+plot_resid_vs_fitted(fit_bus_arima %>% select(arima), "Bus ARIMA(1,0,1)(2,1,2)[7]")
+```
+## Erkenntnisse
+
+- PKW ARIMA(0,1,1)(2,0,0)[7]: Residuenanalyse unauffällig (Lags 11,14,21 aber nur noch sehr leicht), normalverteilt, Ljung Box Test zeigt keine signifikante AUtokorrelation mehr. Das Modell bildet die Wochensaison ab. Einzelne Ausreißer sind auf Feiertage zurückzuführen (können so vom Modell nicht erfasst werden). Insgesamt ist Modell gut für Prognose geeignet
+- LKW ARIMA(1,0,0)(1,1,0)[7] w/ drift: Modell schneidet deutlich schlechter ab, signifikante Restautokorrelation (Ljung Box Test), nicht für Prognose geeignet, daher manuelles ARIMA Modell ->
+- LKW ARIMA(1,0,1)(3,1,0)[7] (manuell): deutlich reduzierte Restautokorrelation, die nicht mehr signifikant ist (Ljung Box), Wochensaison wird erfasst, REsiduen weitgehend unauffällig (ACF Plot: leicht über Grenze bei 11, Histogramm: einige stark negative Ausschläge, logisch durch Feiertage); Modell deutlich besser für Prognose geeignet
+- Bus ARIMA(1,0,1)(2,1,2)[7]: Residuenanalyse unauffällig, keine Restautokorrelation, Wochensaison erfasst, Modell gut für Prognose geeignet 
+
+
+
+## Beste Modelle
+Forecast
+```{r, echo=T}
+# PKW R2 - ARIMA
+fc_pkw_arima %>%
+  autoplot(train_pkw_R2, level = c(80, 95)) +
+  autolayer(test_pkw_R2, Pkw_Gruppe_R2, color = "black") +
+  labs(title = "Forecast PKW R2 - ARIMA(0,1,1)(2,0,0)[7]",
+       y = "Anzahl Fahrzeuge pro Tag",
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+# LKW R2 - ARIMA (manuell)
+fc_lkw_arima_man %>%
+  autoplot(train_lkw_R2, level = c(80, 95)) +
+  autolayer(test_lkw_R2, Lkw_mA_R2, color = "black") +
+  labs(title = "Forecast LKW R2 - ARIMA(1,0,1)(3,1,0)[7] manuell",
+       y = "Anzahl Fahrzeuge pro Tag",
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+
+# Bus R2 - ARIMA
+fc_bus_arima %>%
+  autoplot(train_bus_R2, level = c(80, 95)) +
+  autolayer(test_bus_R2, Busse_R2, color = "black") +
+  labs(title = "Forecast Bus R2 - ARIMA(1,0,1)(2,1,2)[7]",
+       y = "Anzahl Fahrzeuge pro Tag",
+       x = "Zeit in Tagen") +
+  guides(color = guide_legend(title = "Modell"))
+```
+
+### Vergleich von ETS Modellen und Naiven Methoden
+Skill score
+```{r, echo=T}
+# CRPS für Benchmarks
+rmse_pkw_R2_bench <- acc_pkw_R2 %>%
+  filter(.model == "snaive", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_lkw_R2_bench <- acc_lkw_R2 %>%
+  filter(.model == "mean", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_bus_R2_bench <- acc_bus_R2 %>%
+  filter(.model == "mean", .type == "Test") %>%
+  pull(RMSE)
+
+
+# CRPS für ARIMA Modelle
+rmse_pkw_R2_arima <- acc_pkw_R2_arima_test %>% 
+  filter(.model == "arima", .type == "Test") %>%
+  pull(RMSE)
+
+rmse_lkw_R2_arima_man <- acc_lkw_R2_arima_man_test %>% 
+  filter(.model == "arima", .type == "Test") %>%
+  pull(RMSE)
+t
+rmse_bus_R2_arima <- acc_bus_R2_arima_test %>% 
+  filter(.model == "arima", .type == "Test") %>%
+  pull(RMSE)
+
+
+# Skill Score
+skill_rmse_pkw_R2_arima <- (rmse_pkw_R2_bench - rmse_pkw_R2_arima) / rmse_pkw_R2_bench
+skill_rmse_lkw_R2_arima_man <- (rmse_lkw_R2_bench - rmse_lkw_R2_arima_man) / rmse_lkw_R2_bench
+skill_rmse_bus_R2_arima <- (rmse_bus_R2_bench - rmse_bus_R2_arima) / rmse_bus_R2_bench
+
+skill_rmse_pkw_R2_arima
+skill_rmse_lkw_R2_arima_man
+skill_rmse_bus_R2_arima
+```
+Skill score:
+- PKW ARIMA(0,1,1)(2,0,0)[7]: Das Modell schndeidet 13,367% schlechter ab, als die naive Methode.
+- LKW ARIMA(1,0,1)(3,1,0)[7] (manuell): Das Modell schneidet 24,480% besser ab, als die naive Methode und damit nochmal deutlich besser als das ETS(MNM) Modell.
+- Bus ARIMA(1,0,1)(2,1,2)[7]: Das Modell schneidet 22,620% besser ab, als die naive Methode und damit auch nochmal besser als das ETS(ANM) Modell
+
+
+## Fazit
+Insgesamt erfassen die ARIMA Modelle die Autokorrelationen besser als die ETS Modelle. Die Wochensaison wird erkannt und verbessert die Prognosegüte deutlich. Feiertage stellen aber weiterhin ein Problem dar, insbesondere die Weihnachtszeit im Testzeitraum. Die Prognosegüte konnte bei LKW und Bussen verbessert werden, jedoch nicht bei den PKW, was darauf hindeutet, dass besonders kurzfirstige oder externe Effekte nicht ausreichend erfasst werden. Weihnachten wirkt sich besonders auf den PKW Verkehr aus. Der Verkehr nimmt gegen Ende des Jahres stark ab, während das Modell ein deutlich höheres Verkehrsaufkommen prognostiziert. Das Modell müsste dafür aber die Trendwende um Neujahr herum kennen, wofür der Datensatz von einem Jahr aber nicht ausreicht. Die strukturelle Geleichheit die Vorraussetzung für die Anwendung der ARIMA Modelle ist, ist hier nicht gegeben, daher können die Ergebnisse für PKW nur bedingt verlässlich betrachtet werden, während die Modelle für LKW und Busse gute Prognosen liefern.
+
+Die folgende Tabelle fasst die wichtigsten Informationen der besten ARIMA-Modelle je Fahrzeugklasse zusammen und gibt den Skill-Scores im Vergleich zur jeweiligen Benchmark-Methode an.
+
+```{r, echo=T}
+library(tibble)
+# ARIMA-Modelle
+arima_model <- c(
+  "ARIMA(0,1,1)(2,0,0)[7]",
+  "ARIMA(1,0,1)(3,1,0)[7] manuell",
+  "ARIMA(1,0,1)(2,1,2)[7]"
+)
+
+rmse_bench <- c(rmse_pkw_R2_bench, rmse_lkw_R2_bench, rmse_bus_R2_bench)
+rmse_arima <- c(rmse_pkw_R2_arima, rmse_lkw_R2_arima_man, rmse_bus_R2_arima)
+skill_score <- round((rmse_bench - rmse_arima) / rmse_bench, 3)
+
+# Tabelle erstellen
+arima_summary <- tibble(
+  Fahrzeugklasse = fahrzeugklasse,
+  ARIMA_Modell = arima_model,
+  Benchmark = benchmark,
+  RMSE_Benchmark = round(rmse_bench,2),
+  RMSE_ARIMA = round(rmse_arima,2),
+  Skill_Score = skill_score
+)
+
+arima_summary
+```
+
+
+
+
+
+# Modelle im Vergeleich
+Insgesamt wurden drei verschiedene Methoden (Naiv, ETS, ARIMA) auf drei Fahzeugklassen getestet. Das ETS Modell war für die PKW leicht schlechter, während es für die LKW und Busse eine deutliche Verbesserung mit sich brachte, allerdings wurde die Wochensaison nicht vollständig erfasst und Feiertage ebenfalls nicht. Das ARIMA Modell bzw. SARIMA Modell hat sie siebentägige Wochensaison erfasst und bei LKW und Bussen eine noch bessere Prognosegüte geliefert als die ETS Modelle. Das ARIMA Modell hat bei den PKW deutlich schlechter abgeschnitten als bei der naiven Methode, was auf die komplexeren Strukturen und die Weihnachstssaison, die vom Modell in einem Jahr nicht gelernt werden konnte zurückzuführen ist.
+Für alle Modelle wurden RMSE, MAE, Skill Score etc. verglichen und die REsiduen geprüft, die abgesehen von den Feiertagen nciht weiter auffällig waren.
+Insgesammt haben die ARIMA Modelle am besten performt auch wenn sie keine verbesserte PRognosegüte für die PKW liefern konnten. Für eine detaillierte Übersicht nocheinmal die wichtigsten Informationen des besten Modells je Fahrzeugklasse in der folgenden Tabelle:
+
+
+```{r, echo=T}
+skill_score_results = c(0, skill_rmse_lkw_R2_arima_man, skill_rmse_bus_R2_arima)#pkw naive, lkw arima manuell, busse arima
+
+results <- tibble(
+  Fahrzeugklasse = fahrzeugklasse,
+  Benchmark = benchmark,
+  Modell = c("Snaive", "ARIMA(1,0,1)(3,1,0)[7]", "ARIMA(1,0,1)(2,1,2)[7]"),
+  Skill_Score = round(skill_score_results, 3)
+  )
+
+results
+```
+  
+   
+   
+# Future Reserch
+Worauf bei weiteren Projekten geachtet werden sollte:
+- mehr Daten über längeren Zeitraum. Auch wenn die Wochenmuster gut erfasst wurden, konnte die Jahressaison nicht erlernt werden, ebenso Feiertage wie Weihnachten, Tag der deutschen Einheit etc. Außerdem können so lokale Trends erlernt werden also dass z. B gegegen Jahresende weniger PKw unterwegs sind und das am Anfang des Jahres wieder zunimmt.
+- exogene Variablen berücksichtigen. Feiertage haben auch in den ARIMA Modellen zu großen Abweichungen geführt. Feiertage wie Weihnachten können über mehrere Jahre hinweg gelernt werden, Feiertage wie Ostern hingegeben müssten als Dummy Variable mit eingebaut werden bzw. Feiertage generell, da sie den Verkehr (egal welche Klasse) stark beeinflussen. Auch Baustellen könnten als Dummy Variable zu Verbesserungen führen.
+- Langfristig lohnt sich eine Differenzierung der Fahrzeugklassen, da sich Muster und Sensivitäten unterscheiden.
+- Erwartungen an Modelle. Die ARIMA Modelle bieten eine solide Basis für Prognosen, stoßen jedoch bei kurzfristigen Schwankungen an ihre Grenzen. F+ür bessere Prognosen könnten ARIMAX Modelle verwendet werden.
+
+  
+
+
+
+```{r, echo=T, eval=F}
+# Language Options
+german: true
+lang: de-de 
+```
+
+\newpage
+
+# Technical Appendix {-}
+
+```{r, echo = TRUE}
+Sys.time()
+sessionInfo()
+```
+
