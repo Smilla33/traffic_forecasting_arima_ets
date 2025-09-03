@@ -11,9 +11,9 @@ city: Meschede
 author:
 - familyname: B
   othernames: E
-  address:
+  address: "MatNr: 30360314"
   qualifications: "Data Science (BA, 6. Semester)"
-  email:
+  email: "{}"
   correspondingauthor: false
 
 # Language Options
